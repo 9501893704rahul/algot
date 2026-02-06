@@ -2,40 +2,229 @@
 Web-based Real-Time Dashboard for Algo Trader
 This provides a browser-based alternative to the PyQt6 desktop application
 with fast data refresh and modern UI
+
+Enhanced with MCX Commodity Support and Upstox API Integration
 """
 import json
 import random
 import threading
 import time
+import os
 from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import socketserver
 
-# Generate sample data for demonstration
+# Try to import requests for API calls
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+
+
+class UpstoxDataFetcher:
+    """
+    Fetches real-time data from Upstox API
+    Supports NSE, BSE, and MCX exchanges
+    """
+    BASE_URL = "https://api.upstox.com/v2"
+    
+    def __init__(self, access_token=None):
+        self.access_token = access_token or os.environ.get('UPSTOX_ACCESS_TOKEN')
+        self.is_connected = False
+        self.last_fetch_time = None
+        
+        # MCX Commodity instrument mappings
+        self.mcx_instruments = {
+            'CRUDEOIL': 'MCX_FO|CRUDEOIL',
+            'GOLD': 'MCX_FO|GOLD',
+            'GOLDM': 'MCX_FO|GOLDM',
+            'SILVER': 'MCX_FO|SILVER',
+            'SILVERM': 'MCX_FO|SILVERM',
+            'NATURALGAS': 'MCX_FO|NATURALGAS',
+            'COPPER': 'MCX_FO|COPPER',
+            'ZINC': 'MCX_FO|ZINC',
+            'ALUMINIUM': 'MCX_FO|ALUMINIUM',
+            'LEAD': 'MCX_FO|LEAD',
+            'NICKEL': 'MCX_FO|NICKEL',
+        }
+        
+        # Index instrument mappings
+        self.index_instruments = {
+            'NIFTY': 'NSE_INDEX|Nifty 50',
+            'BANKNIFTY': 'NSE_INDEX|Nifty Bank',
+            'FINNIFTY': 'NSE_INDEX|Nifty Fin Service',
+            'SENSEX': 'BSE_INDEX|SENSEX',
+        }
+        
+    def _make_request(self, method, endpoint, data=None):
+        """Make authenticated API request"""
+        if not REQUESTS_AVAILABLE:
+            return {'success': False, 'error': 'requests library not available'}
+            
+        if not self.access_token:
+            return {'success': False, 'error': 'No access token configured'}
+            
+        headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+        
+        url = f"{self.BASE_URL}{endpoint}"
+        
+        try:
+            if method == 'GET':
+                response = requests.get(url, headers=headers, timeout=5)
+            else:
+                response = requests.post(url, headers=headers, json=data, timeout=5)
+            
+            result = response.json()
+            
+            if response.status_code == 200:
+                self.is_connected = True
+                self.last_fetch_time = datetime.now()
+                return {'success': True, 'data': result.get('data', {})}
+            else:
+                return {'success': False, 'error': result.get('message', 'Unknown error')}
+                
+        except requests.Timeout:
+            return {'success': False, 'error': 'Request timeout'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+    
+    def get_market_quote(self, instrument_key):
+        """Get market quote for an instrument"""
+        import urllib.parse
+        encoded_key = urllib.parse.quote(instrument_key, safe='')
+        endpoint = f"/market-quote/ltp?instrument_key={encoded_key}"
+        return self._make_request('GET', endpoint)
+    
+    def get_mcx_ltp(self, symbol):
+        """Get LTP for MCX commodity"""
+        instrument_key = self.mcx_instruments.get(symbol.upper())
+        if not instrument_key:
+            return None
+        
+        result = self.get_market_quote(instrument_key)
+        if result.get('success') and result.get('data'):
+            for key, quote in result['data'].items():
+                return quote.get('last_price')
+        return None
+    
+    def get_index_ltp(self, symbol):
+        """Get LTP for index"""
+        instrument_key = self.index_instruments.get(symbol.upper())
+        if not instrument_key:
+            return None
+        
+        result = self.get_market_quote(instrument_key)
+        if result.get('success') and result.get('data'):
+            for key, quote in result['data'].items():
+                return quote.get('last_price')
+        return None
+
+
 class TradingDataSimulator:
+    """
+    Trading data simulator with MCX commodity support
+    Uses real Upstox data when available, simulated data otherwise
+    """
     def __init__(self):
-        self.nifty_price = 25200.50
-        self.banknifty_price = 52800.75
+        # Initialize Upstox fetcher
+        self.upstox = UpstoxDataFetcher()
+        
+        # Index base prices
+        self.nifty_base = 25200.50
+        self.banknifty_base = 52800.75
+        self.nifty_price = self.nifty_base
+        self.banknifty_price = self.banknifty_base
+        
+        # MCX Commodity base prices (approximate current levels)
+        self.mcx_prices = {
+            'CRUDEOIL': {'price': 6450.0, 'base': 6450.0, 'lot_size': 100, 'unit': 'BBL'},
+            'GOLD': {'price': 78500.0, 'base': 78500.0, 'lot_size': 100, 'unit': 'GM'},
+            'GOLDM': {'price': 78500.0, 'base': 78500.0, 'lot_size': 10, 'unit': 'GM'},
+            'SILVER': {'price': 92500.0, 'base': 92500.0, 'lot_size': 30, 'unit': 'KG'},
+            'SILVERM': {'price': 92500.0, 'base': 92500.0, 'lot_size': 5, 'unit': 'KG'},
+            'NATURALGAS': {'price': 225.0, 'base': 225.0, 'lot_size': 1250, 'unit': 'MMBTU'},
+            'COPPER': {'price': 850.0, 'base': 850.0, 'lot_size': 2500, 'unit': 'KG'},
+        }
+        
+        # Sample positions (mix of F&O and MCX)
         self.positions = [
-            {"symbol": "NIFTY24FEB25200CE", "type": "LONG", "qty": 50, "avg_price": 150.0, "source": "PAPER"},
-            {"symbol": "BANKNIFTY24FEB52800PE", "type": "SHORT", "qty": 25, "avg_price": 280.0, "source": "PAPER"},
-            {"symbol": "RELIANCE", "type": "LONG", "qty": 100, "avg_price": 2950.0, "source": "PAPER"},
+            {"symbol": "CRUDEOIL25FEBFUT", "type": "LONG", "qty": 100, "avg_price": 6400.0, "source": "PAPER", "exchange": "MCX"},
+            {"symbol": "GOLD25FEBFUT", "type": "LONG", "qty": 100, "avg_price": 78000.0, "source": "PAPER", "exchange": "MCX"},
+            {"symbol": "SILVER25MARFUT", "type": "SHORT", "qty": 30, "avg_price": 93000.0, "source": "PAPER", "exchange": "MCX"},
         ]
+        
         self.trades_today = 5
         self.realized_pnl = 2500.0
         self.last_update = datetime.now()
+        self.use_real_data = False  # Toggle for real vs simulated data
         
     def update(self):
-        """Simulate price movements"""
+        """Update prices - uses real data if available, otherwise simulates"""
+        # Try to fetch real data from Upstox
+        if self.upstox.access_token:
+            self._fetch_real_data()
+        else:
+            self._simulate_data()
+        
+        # Update position LTPs based on underlying
+        self._update_positions()
+        self.last_update = datetime.now()
+    
+    def _fetch_real_data(self):
+        """Fetch real data from Upstox API"""
+        # Fetch index data
+        nifty_ltp = self.upstox.get_index_ltp('NIFTY')
+        if nifty_ltp:
+            self.nifty_price = float(nifty_ltp)
+            self.use_real_data = True
+        
+        banknifty_ltp = self.upstox.get_index_ltp('BANKNIFTY')
+        if banknifty_ltp:
+            self.banknifty_price = float(banknifty_ltp)
+        
+        # Fetch MCX commodity data
+        for symbol in self.mcx_prices:
+            ltp = self.upstox.get_mcx_ltp(symbol)
+            if ltp:
+                self.mcx_prices[symbol]['price'] = float(ltp)
+    
+    def _simulate_data(self):
+        """Simulate price movements when real data not available"""
+        self.use_real_data = False
+        
         # Random walk for indices
         self.nifty_price += random.uniform(-20, 20)
         self.banknifty_price += random.uniform(-50, 50)
         
-        # Update position LTPs
+        # Random walk for MCX commodities
+        for symbol, data in self.mcx_prices.items():
+            volatility = data['base'] * 0.002  # 0.2% volatility
+            data['price'] += random.uniform(-volatility, volatility)
+            data['price'] = max(data['base'] * 0.8, data['price'])  # Floor at 80% of base
+    
+    def _update_positions(self):
+        """Update position LTPs and P&L"""
         for pos in self.positions:
-            if 'ltp' not in pos:
-                pos['ltp'] = pos['avg_price']
-            pos['ltp'] = max(0.05, pos['ltp'] * (1 + random.uniform(-0.02, 0.02)))
+            exchange = pos.get('exchange', 'NSE')
+            symbol = pos['symbol']
+            
+            # Determine LTP based on exchange and underlying
+            if exchange == 'MCX':
+                # Extract underlying from symbol (e.g., CRUDEOIL25FEBFUT -> CRUDEOIL)
+                underlying = ''.join([c for c in symbol if c.isalpha()]).replace('FUT', '')
+                if underlying in self.mcx_prices:
+                    pos['ltp'] = self.mcx_prices[underlying]['price']
+                elif 'ltp' not in pos:
+                    pos['ltp'] = pos['avg_price']
+            else:
+                if 'ltp' not in pos:
+                    pos['ltp'] = pos['avg_price']
+                pos['ltp'] = max(0.05, pos['ltp'] * (1 + random.uniform(-0.02, 0.02)))
             
             # Calculate P&L
             if pos['type'] == 'LONG':
@@ -51,25 +240,39 @@ class TradingDataSimulator:
             pos['change'] = pos['ltp'] - pos['avg_price']
             pos['change_pct'] = (pos['change'] / pos['avg_price'] * 100) if pos['avg_price'] > 0 else 0
         
-        self.last_update = datetime.now()
-        
     def get_data(self):
         """Get current market data as JSON"""
         total_unrealized = sum(p.get('pnl', 0) for p in self.positions)
         total_pnl = self.realized_pnl + total_unrealized
         
+        # Calculate MCX data with changes
+        mcx_data = {}
+        for symbol, data in self.mcx_prices.items():
+            change = data['price'] - data['base']
+            change_pct = (change / data['base'] * 100) if data['base'] > 0 else 0
+            mcx_data[symbol.lower()] = {
+                "price": round(data['price'], 2),
+                "change": round(change, 2),
+                "change_pct": round(change_pct, 2),
+                "lot_size": data['lot_size'],
+                "unit": data['unit']
+            }
+        
         return {
             "timestamp": self.last_update.strftime("%H:%M:%S"),
+            "data_source": "LIVE" if self.use_real_data else "SIMULATED",
+            "broker_connected": self.upstox.is_connected,
             "nifty": {
                 "price": round(self.nifty_price, 2),
-                "change": round(self.nifty_price - 25200.50, 2),
-                "change_pct": round((self.nifty_price - 25200.50) / 25200.50 * 100, 2)
+                "change": round(self.nifty_price - self.nifty_base, 2),
+                "change_pct": round((self.nifty_price - self.nifty_base) / self.nifty_base * 100, 2)
             },
             "banknifty": {
                 "price": round(self.banknifty_price, 2),
-                "change": round(self.banknifty_price - 52800.75, 2),
-                "change_pct": round((self.banknifty_price - 52800.75) / 52800.75 * 100, 2)
+                "change": round(self.banknifty_price - self.banknifty_base, 2),
+                "change_pct": round((self.banknifty_price - self.banknifty_base) / self.banknifty_base * 100, 2)
             },
+            "mcx": mcx_data,
             "pnl": {
                 "realized": round(self.realized_pnl, 2),
                 "unrealized": round(total_unrealized, 2),
@@ -91,11 +294,18 @@ class TradingDataSimulator:
                     "change_pct": round(p.get('change_pct', 0), 2),
                     "pnl": round(p.get('pnl', 0), 2),
                     "pnl_pct": round(p.get('pnl_pct', 0), 2),
-                    "source": p['source']
+                    "source": p['source'],
+                    "exchange": p.get('exchange', 'NSE')
                 }
                 for p in self.positions
             ]
         }
+    
+    def set_access_token(self, token):
+        """Set Upstox access token for real data"""
+        self.upstox.access_token = token
+        self.use_real_data = True
+
 
 simulator = TradingDataSimulator()
 
@@ -413,6 +623,10 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                 <span class="info-label">Last Update:</span>
                 <span class="info-value" id="lastUpdate" style="color: #888;">--:--:--</span>
             </div>
+            <div class="info-row">
+                <span class="info-label">Data Source:</span>
+                <span class="info-value" id="dataSource" style="color: #FFD700;">SIMULATED</span>
+            </div>
         </div>
         
         <div class="info-card">
@@ -432,6 +646,43 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             <div class="info-row">
                 <span class="info-label">Pending Orders:</span>
                 <span class="info-value">0</span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- MCX Commodities Section -->
+    <div class="info-section" style="margin-bottom: 20px;">
+        <div class="info-card" style="grid-column: span 3;">
+            <h3>🛢️ MCX Commodities (Real-Time)</h3>
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px;">
+                <div class="info-row" style="flex-direction: column; align-items: flex-start; background: rgba(255,152,0,0.1); padding: 12px; border-radius: 8px;">
+                    <span class="info-label">CRUDE OIL</span>
+                    <div class="index-price" style="margin-top: 5px;">
+                        <span class="price-main" id="crudePrice">₹6,450.00</span>
+                    </div>
+                    <span class="price-change up" id="crudeChange" style="margin-top: 5px;">+0.00 (0.00%)</span>
+                </div>
+                <div class="info-row" style="flex-direction: column; align-items: flex-start; background: rgba(255,215,0,0.1); padding: 12px; border-radius: 8px;">
+                    <span class="info-label">GOLD</span>
+                    <div class="index-price" style="margin-top: 5px;">
+                        <span class="price-main" id="goldPrice">₹78,500.00</span>
+                    </div>
+                    <span class="price-change up" id="goldChange" style="margin-top: 5px;">+0.00 (0.00%)</span>
+                </div>
+                <div class="info-row" style="flex-direction: column; align-items: flex-start; background: rgba(192,192,192,0.1); padding: 12px; border-radius: 8px;">
+                    <span class="info-label">SILVER</span>
+                    <div class="index-price" style="margin-top: 5px;">
+                        <span class="price-main" id="silverPrice">₹92,500.00</span>
+                    </div>
+                    <span class="price-change up" id="silverChange" style="margin-top: 5px;">+0.00 (0.00%)</span>
+                </div>
+                <div class="info-row" style="flex-direction: column; align-items: flex-start; background: rgba(0,150,255,0.1); padding: 12px; border-radius: 8px;">
+                    <span class="info-label">NATURAL GAS</span>
+                    <div class="index-price" style="margin-top: 5px;">
+                        <span class="price-main" id="natgasPrice">₹225.00</span>
+                    </div>
+                    <span class="price-change up" id="natgasChange" style="margin-top: 5px;">+0.00 (0.00%)</span>
+                </div>
             </div>
         </div>
     </div>
@@ -540,14 +791,60 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             // Update last update time
             document.getElementById('lastUpdate').textContent = data.timestamp;
             
+            // Update data source indicator
+            const dataSourceEl = document.getElementById('dataSource');
+            if (data.data_source === 'LIVE') {
+                dataSourceEl.textContent = 'LIVE (Upstox)';
+                dataSourceEl.style.color = '#4CAF50';
+            } else {
+                dataSourceEl.textContent = 'SIMULATED';
+                dataSourceEl.style.color = '#FFD700';
+            }
+            
+            // Update MCX Commodities
+            if (data.mcx) {
+                // Crude Oil
+                if (data.mcx.crudeoil) {
+                    document.getElementById('crudePrice').textContent = `₹${formatNumber(data.mcx.crudeoil.price)}`;
+                    const crudeChangeEl = document.getElementById('crudeChange');
+                    crudeChangeEl.textContent = `${data.mcx.crudeoil.change >= 0 ? '+' : ''}${formatNumber(data.mcx.crudeoil.change)} (${data.mcx.crudeoil.change_pct >= 0 ? '+' : ''}${formatNumber(data.mcx.crudeoil.change_pct)}%)`;
+                    crudeChangeEl.className = `price-change ${data.mcx.crudeoil.change >= 0 ? 'up' : 'down'}`;
+                }
+                
+                // Gold
+                if (data.mcx.gold) {
+                    document.getElementById('goldPrice').textContent = `₹${formatNumber(data.mcx.gold.price)}`;
+                    const goldChangeEl = document.getElementById('goldChange');
+                    goldChangeEl.textContent = `${data.mcx.gold.change >= 0 ? '+' : ''}${formatNumber(data.mcx.gold.change)} (${data.mcx.gold.change_pct >= 0 ? '+' : ''}${formatNumber(data.mcx.gold.change_pct)}%)`;
+                    goldChangeEl.className = `price-change ${data.mcx.gold.change >= 0 ? 'up' : 'down'}`;
+                }
+                
+                // Silver
+                if (data.mcx.silver) {
+                    document.getElementById('silverPrice').textContent = `₹${formatNumber(data.mcx.silver.price)}`;
+                    const silverChangeEl = document.getElementById('silverChange');
+                    silverChangeEl.textContent = `${data.mcx.silver.change >= 0 ? '+' : ''}${formatNumber(data.mcx.silver.change)} (${data.mcx.silver.change_pct >= 0 ? '+' : ''}${formatNumber(data.mcx.silver.change_pct)}%)`;
+                    silverChangeEl.className = `price-change ${data.mcx.silver.change >= 0 ? 'up' : 'down'}`;
+                }
+                
+                // Natural Gas
+                if (data.mcx.naturalgas) {
+                    document.getElementById('natgasPrice').textContent = `₹${formatNumber(data.mcx.naturalgas.price)}`;
+                    const natgasChangeEl = document.getElementById('natgasChange');
+                    natgasChangeEl.textContent = `${data.mcx.naturalgas.change >= 0 ? '+' : ''}${formatNumber(data.mcx.naturalgas.change)} (${data.mcx.naturalgas.change_pct >= 0 ? '+' : ''}${formatNumber(data.mcx.naturalgas.change_pct)}%)`;
+                    natgasChangeEl.className = `price-change ${data.mcx.naturalgas.change >= 0 ? 'up' : 'down'}`;
+                }
+            }
+            
             // Update positions table
             const tableBody = document.getElementById('positionsTable');
             tableBody.innerHTML = '';
             
             data.positions.forEach((pos, idx) => {
                 const row = document.createElement('tr');
+                const exchangeBadge = pos.exchange === 'MCX' ? '<span style="color: #FF9800; font-size: 10px; margin-left: 5px;">[MCX]</span>' : '';
                 row.innerHTML = `
-                    <td><strong>${pos.symbol}</strong></td>
+                    <td><strong>${pos.symbol}</strong>${exchangeBadge}</td>
                     <td>${pos.type}</td>
                     <td>${pos.qty}</td>
                     <td>₹${formatNumber(pos.avg_price)}</td>
@@ -641,24 +938,30 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # Suppress HTTP request logs
         pass
 
+class ReusableTCPServer(socketserver.TCPServer):
+    """TCP Server that allows address reuse"""
+    allow_reuse_address = True
+
+
 def run_server(port=12000):
     """Run the web dashboard server"""
-    with socketserver.TCPServer(("", port), DashboardHandler) as httpd:
+    with ReusableTCPServer(("", port), DashboardHandler) as httpd:
         print(f"\n{'='*60}")
-        print(f"🚀 Algo Trader Real-Time Dashboard")
+        print(f"🚀 Algo Trader Real-Time Dashboard with MCX Support")
         print(f"{'='*60}")
         print(f"✅ Server running on port {port}")
-        print(f"🌐 Open in browser: https://work-1-bbacfugwhxrjvjab.prod-runtime.all-hands.dev")
+        print(f"🌐 Open in browser: https://work-1-sszlqpxmyfyoffir.prod-runtime.all-hands.dev")
         print(f"{'='*60}")
         print(f"\n📊 Features:")
         print(f"   - Real-time data refresh every 1 second")
+        print(f"   - MCX Commodities: CRUDE OIL, GOLD, SILVER, NATURAL GAS")
         print(f"   - Live P&L tracking with color indicators")
         print(f"   - Data freshness indicator")
-        print(f"   - Price change animations")
-        print(f"   - Auto-refresh toggle")
+        print(f"   - Upstox API integration ready")
         print(f"\nPress Ctrl+C to stop the server...")
         print(f"{'='*60}\n")
         httpd.serve_forever()
+
 
 if __name__ == "__main__":
     run_server()
