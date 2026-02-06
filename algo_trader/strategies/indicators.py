@@ -35,7 +35,13 @@ class Indicators:
     @staticmethod
     def vwma(source: pd.Series, volume: pd.Series, length: int) -> pd.Series:
         """Volume Weighted Moving Average - ta.vwma()"""
-        return (source * volume).rolling(window=length).sum() / volume.rolling(window=length).sum()
+        vol_sum = volume.rolling(window=length).sum()
+        # Handle division by zero when volume is 0 - fall back to simple average
+        vol_sum = vol_sum.replace(0, np.nan)
+        vwma = (source * volume).rolling(window=length).sum() / vol_sum
+        # Fill NaN with SMA when volume is zero
+        sma = source.rolling(window=length).mean()
+        return vwma.fillna(sma)
 
     @staticmethod
     def rma(source: pd.Series, length: int) -> pd.Series:
@@ -49,8 +55,12 @@ class Indicators:
         delta = source.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=length).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=length).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
+        # Handle division by zero: when loss is 0, RSI is 100; when gain is 0, RSI is 0
+        rs = gain / loss.replace(0, np.inf)
+        rsi = 100 - (100 / (1 + rs))
+        # When gain is 0 and loss is 0, price didn't change - set RSI to 50 (neutral)
+        rsi = rsi.fillna(50)
+        return rsi
 
     @staticmethod
     def macd(source: pd.Series, fast_length: int = 12, slow_length: int = 26,
@@ -93,7 +103,11 @@ class Indicators:
         """Stochastic Oscillator - ta.stoch()"""
         lowest_low = low.rolling(window=k_length).min()
         highest_high = high.rolling(window=k_length).max()
-        k = 100 * (close - lowest_low) / (highest_high - lowest_low)
+        # Handle division by zero when highest == lowest (flat price)
+        range_hl = highest_high - lowest_low
+        range_hl = range_hl.replace(0, np.nan)  # Avoid div by zero
+        k = 100 * (close - lowest_low) / range_hl
+        k = k.fillna(50)  # When price is flat, stoch is neutral (50)
         k = Indicators.sma(k, k_smooth)
         d = Indicators.sma(k, d_smooth)
         return k, d
@@ -117,11 +131,18 @@ class Indicators:
 
         tr = Indicators.tr(high, low, close)
         atr = Indicators.rma(tr, length)
-
-        plus_di = 100 * Indicators.rma(plus_dm, length) / atr
-        minus_di = 100 * Indicators.rma(minus_dm, length) / atr
-
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        
+        # Handle division by zero when ATR is 0 (flat price)
+        atr_safe = atr.replace(0, np.nan)
+        plus_di = 100 * Indicators.rma(plus_dm, length) / atr_safe
+        minus_di = 100 * Indicators.rma(minus_dm, length) / atr_safe
+        
+        # Handle division by zero when plus_di + minus_di is 0
+        di_sum = plus_di + minus_di
+        di_sum = di_sum.replace(0, np.nan)
+        dx = 100 * abs(plus_di - minus_di) / di_sum
+        dx = dx.fillna(0)  # When no directional movement, ADX is 0
+        
         return Indicators.rma(dx, length)
 
     @staticmethod
@@ -210,7 +231,11 @@ class Indicators:
         """Williams %R"""
         highest_high = Indicators.highest(high, length)
         lowest_low = Indicators.lowest(low, length)
-        return -100 * (highest_high - close) / (highest_high - lowest_low)
+        # Handle division by zero when highest == lowest (flat price)
+        range_hl = highest_high - lowest_low
+        range_hl = range_hl.replace(0, np.nan)
+        wr = -100 * (highest_high - close) / range_hl
+        return wr.fillna(-50)  # Neutral value when price is flat
 
     @staticmethod
     def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
@@ -226,7 +251,12 @@ class Indicators:
         mf = tp * volume
         mf_pos = mf.where(tp > tp.shift(1), 0).rolling(window=length).sum()
         mf_neg = mf.where(tp < tp.shift(1), 0).rolling(window=length).sum()
-        return 100 - (100 / (1 + mf_pos / mf_neg))
+        # Handle division by zero when mf_neg is 0
+        mf_neg_safe = mf_neg.replace(0, np.nan)
+        mfi = 100 - (100 / (1 + mf_pos / mf_neg_safe))
+        # When only positive flow, MFI is 100; when no flow, neutral (50)
+        mfi = mfi.fillna(50)
+        return mfi
 
     @staticmethod
     def ichimoku(high: pd.Series, low: pd.Series, tenkan: int = 9,
