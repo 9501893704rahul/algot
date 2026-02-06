@@ -30,23 +30,20 @@ class UpstoxDataFetcher:
     BASE_URL = "https://api.upstox.com/v2"
     
     def __init__(self, access_token=None):
-        self.access_token = access_token or os.environ.get('UPSTOX_ACCESS_TOKEN')
+        # Try environment variable first, then use hardcoded token
+        self.access_token = access_token or os.environ.get('UPSTOX_ACCESS_TOKEN') or "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJBVjMwNjgiLCJqdGkiOiI2OTg1YTM1NTJjZTdiODdhOTAyZWQ4ZDQiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6dHJ1ZSwiaWF0IjoxNzcwMzY1NzgxLCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE3NzA0MTUyMDB9.5hJRckhM7Dm0YI0Q8zka_MNC8ClJqAyIWD4dd9q9eNs"
         self.is_connected = False
         self.last_fetch_time = None
         
-        # MCX Commodity instrument mappings
+        # MCX Commodity instrument mappings (correct Upstox keys)
         self.mcx_instruments = {
-            'CRUDEOIL': 'MCX_FO|CRUDEOIL',
-            'GOLD': 'MCX_FO|GOLD',
-            'GOLDM': 'MCX_FO|GOLDM',
-            'SILVER': 'MCX_FO|SILVER',
-            'SILVERM': 'MCX_FO|SILVERM',
-            'NATURALGAS': 'MCX_FO|NATURALGAS',
-            'COPPER': 'MCX_FO|COPPER',
-            'ZINC': 'MCX_FO|ZINC',
-            'ALUMINIUM': 'MCX_FO|ALUMINIUM',
-            'LEAD': 'MCX_FO|LEAD',
-            'NICKEL': 'MCX_FO|NICKEL',
+            'CRUDEOIL': 'MCX_FO|472789',     # CRUDEOIL FUT 19 MAR 26
+            'GOLD': 'MCX_FO|472784',          # GOLDTEN FUT 27 FEB 26
+            'GOLDM': 'MCX_FO|472781',         # GOLDM FUT 05 MAR 26
+            'SILVER': 'MCX_FO|464150',        # SILVER FUT 03 JUL 26
+            'SILVERM': 'MCX_FO|451669',       # SILVERM FUT 27 FEB 26
+            'NATURALGAS': 'MCX_FO|472791',    # NATURALGAS FUT
+            'COPPER': 'MCX_FO|472793',        # COPPER FUT
         }
         
         # Index instrument mappings
@@ -140,14 +137,14 @@ class TradingDataSimulator:
         self.nifty_price = self.nifty_base
         self.banknifty_price = self.banknifty_base
         
-        # MCX Commodity base prices (approximate current levels)
+        # MCX Commodity base prices (current levels - will be updated from API)
         self.mcx_prices = {
-            'CRUDEOIL': {'price': 6450.0, 'base': 6450.0, 'lot_size': 100, 'unit': 'BBL'},
-            'GOLD': {'price': 78500.0, 'base': 78500.0, 'lot_size': 100, 'unit': 'GM'},
-            'GOLDM': {'price': 78500.0, 'base': 78500.0, 'lot_size': 10, 'unit': 'GM'},
-            'SILVER': {'price': 92500.0, 'base': 92500.0, 'lot_size': 30, 'unit': 'KG'},
-            'SILVERM': {'price': 92500.0, 'base': 92500.0, 'lot_size': 5, 'unit': 'KG'},
-            'NATURALGAS': {'price': 225.0, 'base': 225.0, 'lot_size': 1250, 'unit': 'MMBTU'},
+            'CRUDEOIL': {'price': 5755.0, 'base': 5755.0, 'lot_size': 100, 'unit': 'BBL'},
+            'GOLD': {'price': 85000.0, 'base': 85000.0, 'lot_size': 100, 'unit': '10GM'},
+            'GOLDM': {'price': 85200.0, 'base': 85200.0, 'lot_size': 10, 'unit': '1GM'},
+            'SILVER': {'price': 95000.0, 'base': 95000.0, 'lot_size': 30, 'unit': 'KG'},
+            'SILVERM': {'price': 95000.0, 'base': 95000.0, 'lot_size': 5, 'unit': 'KG'},
+            'NATURALGAS': {'price': 280.0, 'base': 280.0, 'lot_size': 1250, 'unit': 'MMBTU'},
             'COPPER': {'price': 850.0, 'base': 850.0, 'lot_size': 2500, 'unit': 'KG'},
         }
         
