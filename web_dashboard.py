@@ -30,8 +30,8 @@ class UpstoxDataFetcher:
     BASE_URL = "https://api.upstox.com/v2"
     
     def __init__(self, access_token=None):
-        # Try environment variable first, then use hardcoded token
-        self.access_token = access_token or os.environ.get('UPSTOX_ACCESS_TOKEN') or "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJBVjMwNjgiLCJqdGkiOiI2OTg1YTM1NTJjZTdiODdhOTAyZWQ4ZDQiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6dHJ1ZSwiaWF0IjoxNzcwMzY1NzgxLCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE3NzA0MTUyMDB9.5hJRckhM7Dm0YI0Q8zka_MNC8ClJqAyIWD4dd9q9eNs"
+        # Try environment variable first - DO NOT hardcode credentials
+        self.access_token = access_token or os.environ.get('UPSTOX_ACCESS_TOKEN')
         self.is_connected = False
         self.last_fetch_time = None
         
@@ -204,6 +204,33 @@ class TradingDataSimulator:
             data['price'] += random.uniform(-volatility, volatility)
             data['price'] = max(data['base'] * 0.8, data['price'])  # Floor at 80% of base
     
+    def _extract_mcx_underlying(self, symbol: str) -> str:
+        """
+        Extract underlying commodity from MCX symbol.
+        Examples:
+            CRUDEOIL25FEBFUT -> CRUDEOIL
+            GOLD25FEBFUT -> GOLD
+            GOLDM25MARFUT -> GOLDM
+            SILVERM25FEBFUT -> SILVERM
+            NATURALGAS25MARFUT -> NATURALGAS
+        """
+        # Known MCX commodities with their typical symbol prefixes
+        mcx_commodities = ['CRUDEOIL', 'NATURALGAS', 'SILVERM', 'GOLDM', 'GOLD', 'SILVER', 'COPPER']
+        
+        symbol_upper = symbol.upper()
+        for commodity in mcx_commodities:
+            if symbol_upper.startswith(commodity):
+                return commodity
+        
+        # Fallback: extract alphabetic prefix before numbers
+        underlying = ''
+        for c in symbol_upper:
+            if c.isalpha():
+                underlying += c
+            elif c.isdigit():
+                break
+        return underlying.replace('FUT', '') if underlying else symbol_upper
+    
     def _update_positions(self):
         """Update position LTPs and P&L"""
         for pos in self.positions:
@@ -212,8 +239,8 @@ class TradingDataSimulator:
             
             # Determine LTP based on exchange and underlying
             if exchange == 'MCX':
-                # Extract underlying from symbol (e.g., CRUDEOIL25FEBFUT -> CRUDEOIL)
-                underlying = ''.join([c for c in symbol if c.isalpha()]).replace('FUT', '')
+                # Extract underlying from symbol using improved logic
+                underlying = self._extract_mcx_underlying(symbol)
                 if underlying in self.mcx_prices:
                     pos['ltp'] = self.mcx_prices[underlying]['price']
                 elif 'ltp' not in pos:
@@ -223,19 +250,24 @@ class TradingDataSimulator:
                     pos['ltp'] = pos['avg_price']
                 pos['ltp'] = max(0.05, pos['ltp'] * (1 + random.uniform(-0.02, 0.02)))
             
-            # Calculate P&L
-            if pos['type'] == 'LONG':
-                pos['pnl'] = (pos['ltp'] - pos['avg_price']) * pos['qty']
-            else:
-                pos['pnl'] = (pos['avg_price'] - pos['ltp']) * pos['qty']
+            # Calculate P&L with safe division
+            avg_price = pos.get('avg_price', 0)
+            qty = pos.get('qty', 0)
+            ltp = pos.get('ltp', avg_price)
             
-            if pos['avg_price'] > 0:
-                pos['pnl_pct'] = (pos['pnl'] / (pos['avg_price'] * pos['qty'])) * 100
+            if pos['type'] == 'LONG':
+                pos['pnl'] = (ltp - avg_price) * qty
+            else:
+                pos['pnl'] = (avg_price - ltp) * qty
+            
+            # Safe P&L percentage calculation
+            if avg_price > 0 and qty != 0:
+                pos['pnl_pct'] = (pos['pnl'] / (avg_price * abs(qty))) * 100
             else:
                 pos['pnl_pct'] = 0
                 
-            pos['change'] = pos['ltp'] - pos['avg_price']
-            pos['change_pct'] = (pos['change'] / pos['avg_price'] * 100) if pos['avg_price'] > 0 else 0
+            pos['change'] = ltp - avg_price
+            pos['change_pct'] = (pos['change'] / avg_price * 100) if avg_price > 0 else 0
         
     def get_data(self):
         """Get current market data as JSON"""
